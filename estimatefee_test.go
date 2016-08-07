@@ -66,7 +66,7 @@ func TestEstimateFee(t *testing.T) {
 	
 	// Try with no txs and get zero for all queries. 
 	expected := 0.0
-	for i := uint32(1); i <= estimateFeeMaxWait; i ++ {
+	for i := uint32(1); i <= estimateFeeBins; i ++ {
 		estimated := ef.EstimateFee(i)
 		
 		if estimated != expected {
@@ -80,7 +80,7 @@ func TestEstimateFee(t *testing.T) {
 	
 	// Expected should still be zero because this is still in the mempool.
 	expected = 0.0
-	for i := uint32(1); i <= estimateFeeMaxWait; i ++ {
+	for i := uint32(1); i <= estimateFeeBins; i ++ {
 		estimated := ef.EstimateFee(i)
 		
 		if estimated != expected {
@@ -91,7 +91,7 @@ func TestEstimateFee(t *testing.T) {
 	// Record a block.
 	ef.RecordBlock(eft.testBlock([]*wire.MsgTx{tx.Tx.MsgTx()}))
 	expected = expectedFeePerKb(tx)
-	for i := uint32(1); i <= estimateFeeMaxWait; i ++ {
+	for i := uint32(1); i <= estimateFeeBins; i ++ {
 		estimated := ef.EstimateFee(i)
 		
 		if estimated != expected {
@@ -117,7 +117,7 @@ func TestEstimateFee(t *testing.T) {
 	
 	// Now the estimated amount should depend on the value 
 	// of the argument to estimate fee. 
-	for i := uint32(1); i <= estimateFeeMaxWait; i ++ {
+	for i := uint32(1); i <= estimateFeeBins; i ++ {
 		estimated := ef.EstimateFee(i)
 		if i > 8 {
 			expected = expectedFeePerKb(txA)
@@ -139,7 +139,7 @@ func TestEstimateFee(t *testing.T) {
 	
 	// Now the estimated amount should depend on the value 
 	// of the argument to estimate fee. 
-	for i := uint32(1); i <= estimateFeeMaxWait; i ++ {
+	for i := uint32(1); i <= estimateFeeBins; i ++ {
 		estimated := ef.EstimateFee(i)
 		if i <= 8 {
 			expected = expectedFeePerKb(txB)
@@ -164,7 +164,7 @@ func TestEstimateFee(t *testing.T) {
 	
 	// This should have no effect on the outcome because too 
 	// many blocks have been mined for txC to be recorded.
-	for i := uint32(1); i <= estimateFeeMaxWait; i ++ {
+	for i := uint32(1); i <= estimateFeeBins; i ++ {
 		estimated := ef.EstimateFee(i)
 		if i <= 8 {
 			expected = expectedFeePerKb(txB)
@@ -180,16 +180,16 @@ func TestEstimateFee(t *testing.T) {
 	}
 }
 
-func (eft *estimateFeeTester) estimates(ef *feeEstimator) [estimateFeeMaxWait]float64 {
+func (eft *estimateFeeTester) estimates(ef *feeEstimator) [estimateFeeBins]float64 {
 	
 	// Generate estimates
-	var estimates [estimateFeeMaxWait]float64
-	for i := 0; i < estimateFeeMaxWait; i++ {
+	var estimates [estimateFeeBins]float64
+	for i := 0; i < estimateFeeBins; i++ {
 		estimates[i] = ef.EstimateFee(1)
 	}
 	
 	// Check that all estimated fee results go in descending order. 
-	for i := 1; i < estimateFeeMaxWait; i++ {
+	for i := 1; i < estimateFeeBins; i++ {
 		if estimates[i] > estimates[i - 1] {
 			eft.t.Error("Estimates not in descending order.")
 		}
@@ -200,9 +200,9 @@ func (eft *estimateFeeTester) estimates(ef *feeEstimator) [estimateFeeMaxWait]fl
 
 func (eft *estimateFeeTester) round(ef *feeEstimator, 
 	txHistory [][]*mining.TxDesc, blockHistory []*btcutil.Block, 
-	estimateHistory [][estimateFeeMaxWait]float64, 
+	estimateHistory [][estimateFeeBins]float64, 
 	txPerRound, txPerBlock, maxRollback uint32) ([][]*mining.TxDesc, 
-	[]*btcutil.Block, [][estimateFeeMaxWait]float64) {
+	[]*btcutil.Block, [][estimateFeeBins]float64) {
 		
 	// generate new txs.
 	var newTxs []*mining.TxDesc
@@ -214,8 +214,8 @@ func (eft *estimateFeeTester) round(ef *feeEstimator,
 	
 	// Construct new tx history.
 	txHistory = append(txHistory, newTxs)
-	if len(txHistory) > estimateFeeMaxWait {
-		txHistory = txHistory[1 : estimateFeeMaxWait + 1]
+	if len(txHistory) > estimateFeeBins {
+		txHistory = txHistory[1 : estimateFeeBins + 1]
 	}
 	
 	// generate new block, with no duplicates.
@@ -268,7 +268,7 @@ func TestEstimateFeeRollback(t *testing.T) {
 	eft := estimateFeeTester{t: t}
 	txHistory := make([][]*mining.TxDesc, 0)
 	blockHistory := make([]*btcutil.Block, 0)
-	estimateHistory := [][estimateFeeMaxWait]float64{eft.estimates(ef)}
+	estimateHistory := [][estimateFeeBins]float64{eft.estimates(ef)}
 	
 	// Make some initial rounds so that we have room to step back.
 	for round := 0; round < stepsBack - 1; round++ {
@@ -292,7 +292,7 @@ func TestEstimateFeeRollback(t *testing.T) {
 			estimates := eft.estimates(ef)
 			
 			// Ensure that these are both the same. 
-			for i := 0; i < estimateFeeMaxWait; i++ {
+			for i := 0; i < estimateFeeBins; i++ {
 				if expected[i] != estimates[i] {
 					t.Error("Rollback value mismatch.")
 				}

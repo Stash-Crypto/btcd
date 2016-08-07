@@ -7,6 +7,7 @@ package main
 import (
 	"sync"
 	"sort"
+	"math"
 	"math/rand"
 	"errors"
 	"fmt"
@@ -19,7 +20,7 @@ import (
 const (
 	// estimateFeeDepth is the maximum number of blocks before a transaction
 	// is confirmed that we want to track. 
-	estimateFeeMaxWait = 25
+	estimateFeeBins = 25
 	
 	// estimateFeeBinSize is the number of txs stored in each bin. 
 	estimateFeeBinSize = 100
@@ -40,19 +41,6 @@ type observedTransaction struct {
 	mined int32 // The block in which this tx was mined. 
 }
 
-// estimateFeeSet is a slice that can be sorted by the fee per kb rate. 
-type estimateFeeSet []*observedTransaction
-
-func (b estimateFeeSet) Len() int { return len(b) }
-
-func (b estimateFeeSet) Less(i, j int) bool {
-	return b[i].feePerKb > b[j].feePerKb
-}
-
-func (b estimateFeeSet) Swap(i, j int) {
-	b[i], b[j] = b[j], b[i]
-}
-
 // tt is safe for concurrent access. 
 type feeEstimator struct {
 	
@@ -65,10 +53,10 @@ type feeEstimator struct {
 	
 	sync.RWMutex
 	observed map[chainhash.Hash]observedTransaction
-	bin [estimateFeeMaxWait][]*observedTransaction
+	bin [estimateFeeBins][]*observedTransaction
 	
-	// The sorted set of txs we use to estimate the fee.
-	sorted estimateFeeSet
+	// The cached estimates.
+	cached []float64
 	
 	// Transactions that have been removed from the bins. This allows us to
 	// revert in case of an orphaned block.
@@ -113,7 +101,7 @@ func (ef *feeEstimator) RecordBlock(block *btcutil.Block) {
 	defer ef.Unlock()
 	
 	// The previous sorted list is invalid, so delete it. 
-	ef.sorted = nil
+	ef.cached = nil
 	
 	height := block.Height()
 	if height != ef.height + 1 && ef.height != mempoolHeight {
@@ -131,7 +119,7 @@ func (ef *feeEstimator) RecordBlock(block *btcutil.Block) {
 	
 	// Count the number of replacements we make per bin so that we don't 
 	// replace too many. 
-	var replacementCounts [estimateFeeMaxWait]int
+	var replacementCounts [estimateFeeBins]int
 	
 	// Keep track of which txs were dropped in case of an orphan block. 
 	dropped := make([]*observedTransaction, 0, 100)
@@ -175,7 +163,7 @@ func (ef *feeEstimator) RecordBlock(block *btcutil.Block) {
 	
 	// Go through the mempool for txs that have been in too long. 
 	for hash, o := range ef.observed {
-		if height - o.observed >= estimateFeeMaxWait {
+		if height - o.observed >= estimateFeeBins {
 			delete(ef.observed, hash)
 		}
 	}
@@ -200,7 +188,7 @@ func (ef *feeEstimator) Rollback() error {
 	defer ef.Unlock()
 	
 	// The previous sorted list is invalid, so delete it. 
-	ef.sorted = nil
+	ef.cached = nil
 	
 	// pop the last list of dropped txs from the stack. 
 	last := len(ef.dropped) - 1
@@ -213,7 +201,7 @@ func (ef *feeEstimator) Rollback() error {
 	ef.dropped = ef.dropped[0:last]
 	
 	// where we are in each bin as we replace txs. 
-	var replacementCounters [estimateFeeMaxWait]int
+	var replacementCounters [estimateFeeBins]int
 	
 	// Go through the txs in the dropped box. 
 	for _, o := range dropped {
@@ -273,26 +261,88 @@ func (ef *feeEstimator) Rollback() error {
 	return nil
 } 
 
-// sortBinnedTransactions takes all transactions in all bins and returns a 
-// sorted list of them all. 
-func (ef *feeEstimator) sortBinnedTransactions() estimateFeeSet {
-	capacity := 0
-	for _, b := range ef.bin {
-		capacity += len(b)
+// estimateFeeSet is a set of txs that can that is sorted
+// by the fee per kb rate. 
+type estimateFeeSet struct {
+	feeRate []float64
+	bin [estimateFeeBins]uint32
+}
+
+func (b *estimateFeeSet) Len() int { return len(b.feeRate) }
+
+func (b *estimateFeeSet) Less(i, j int) bool {
+	return b.feeRate[i] > b.feeRate[j]
+}
+
+func (b *estimateFeeSet) Swap(i, j int) {
+	b.feeRate[i], b.feeRate[j] = b.feeRate[j], b.feeRate[i]
+}
+
+// EstimateFee returns the estimated fee for a transaction
+// to confirm in confirmations blocks from now, given from
+// the data set we have collected. 
+func (b *estimateFeeSet) EstimateFee(confirmations int) float64 {
+	if confirmations <= 0 {
+		return math.Inf(1)
 	}
 	
-	sorted := estimateFeeSet(make([]*observedTransaction, capacity))
+	if confirmations > estimateFeeBins {
+		return 0
+	}
+	
+	var min, max uint32 = 0, 0
+	for i := 0; i < confirmations - 1; i++ {
+		min += b.bin[i]
+	}
+	
+	max = min + b.bin[confirmations - 1]
+	
+	// We don't have any transactions! 
+	if min == 0 && max == 0 {
+		return 0
+	}
+	
+	return b.feeRate[(min + max - 1) / 2]
+}
+
+// newEstimateFeeSet creates a temporary data structure that
+// can be used to find all fee estimates. 
+func (ef *feeEstimator) newEstimateFeeSet() *estimateFeeSet {
+	set := &estimateFeeSet{}
+	
+	capacity := 0
+	for i, b := range ef.bin {
+		l := len(b)
+		set.bin[i] = uint32(l)
+		capacity += l
+	}
+	
+	set.feeRate = make([]float64, capacity)
 	
 	i := 0
 	for _, b := range ef.bin {
 		for _, o := range b {
-			sorted[i] = o
+			set.feeRate[i] = o.feePerKb
 			i++
 		}
 	}
 	
-	sort.Sort(sorted)
-	return sorted
+	sort.Sort(set)
+	
+	return set
+}
+
+// estimates returns the set of all fee estimates from 1 to estimateFeeBins
+// confirmations from now. 
+func (ef *feeEstimator) estimates() []float64 {
+	set := ef.newEstimateFeeSet()
+	
+	estimates := make([]float64, estimateFeeBins)
+	for i := 0; i < estimateFeeBins; i ++ {
+		estimates[i] = set.EstimateFee(i + 1)
+	}
+	
+	return estimates
 }
 
 // Estimate the fee per kb to have a tx confirmed a given number of blocks 
@@ -301,26 +351,17 @@ func (ef *feeEstimator) EstimateFee(confirmations uint32) float64 {
 	ef.Lock()
 	defer ef.Unlock()
 	
-	if confirmations == 0 || confirmations > estimateFeeMaxWait {
+	if confirmations <= 0 {
+		return math.Inf(1)
+	}
+	
+	if confirmations > estimateFeeBins {
 		return 0
 	}
 	
-	var min, max uint32 = 0, 0
-	for i := uint32(0); i < confirmations - 1; i++ {
-		min += uint32(len(ef.bin[i]))
+	if ef.cached == nil {
+		ef.cached = ef.estimates()
 	}
 	
-	max = min + uint32(len(ef.bin[confirmations - 1]))
-	
-	// We don't have any transactions! 
-	if min == 0 && max == 0 {
-		return 0
-	}
-	
-	// Generate sorted list if it doesn't exist. 
-	if ef.sorted == nil {
-		ef.sorted = ef.sortBinnedTransactions() 
-	}
-	
-	return ef.sorted[(min + max - 1) / 2].feePerKb
+	return ef.cached[int(confirmations) - 1]
 }
