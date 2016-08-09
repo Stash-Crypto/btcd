@@ -132,6 +132,7 @@ var rpcHandlersBeforeInit = map[string]commandHandler{
 	"debuglevel":            handleDebugLevel,
 	"decoderawtransaction":  handleDecodeRawTransaction,
 	"decodescript":          handleDecodeScript,
+	"estimatefee":           handleEstimateFee,
 	"generate":              handleGenerate,
 	"getaddednodeinfo":      handleGetAddedNodeInfo,
 	"getbestblock":          handleGetBestBlock,
@@ -222,7 +223,6 @@ var rpcAskWallet = map[string]struct{}{
 
 // Commands that are currently unimplemented, but should ultimately be.
 var rpcUnimplemented = map[string]struct{}{
-	"estimatefee":      {},
 	"estimatepriority": {},
 	"getchaintips":     {},
 	"getmempoolentry":  {},
@@ -847,6 +847,17 @@ func handleDecodeScript(s *rpcServer, cmd interface{}, closeChan <-chan struct{}
 		reply.P2sh = p2sh.EncodeAddress()
 	}
 	return reply, nil
+}
+
+// handleEstimateFee handles estimatefee commands.
+func handleEstimateFee(s *rpcServer, cmd interface{}, closeChan <-chan struct{}) (interface{}, error) {
+	c := cmd.(*btcjson.EstimateFeeCmd)
+
+	if s.cfg.FeeEstimator == nil {
+		return nil, errors.New("Fee estimation disabled")
+	}
+
+	return s.cfg.FeeEstimator.EstimateFee(uint32(c.NumBlocks)), nil
 }
 
 // handleGenerate handles generate commands.
@@ -4175,6 +4186,10 @@ type rpcserverConfig struct {
 	// of to provide additional data when queried.
 	TxIndex   *indexers.TxIndex
 	AddrIndex *indexers.AddrIndex
+
+	// The fee estimator keeps track of how long transactions are left in
+	// the mempool before they are mined into blocks.
+	FeeEstimator *mempool.FeeEstimator
 }
 
 // newRPCServer returns a new instance of the rpcServer struct.
