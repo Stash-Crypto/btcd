@@ -2249,6 +2249,8 @@ func newServer(listenAddrs []string, db database.DB, chainParams *chaincfg.Param
 		return nil, err
 	}
 
+	feeEstimator := mempool.NewFeeEstimator(0)
+
 	txC := mempool.Config{
 		Policy: mempool.Policy{
 			DisableRelayPriority: cfg.NoRelayPriority,
@@ -2271,6 +2273,7 @@ func newServer(listenAddrs []string, db database.DB, chainParams *chaincfg.Param
 		SigCache:           s.sigCache,
 		HashCache:          s.hashCache,
 		AddrIndex:          s.addrIndex,
+		FeeEstimator:       feeEstimator,
 	}
 	s.txMemPool = mempool.New(&txC)
 
@@ -2405,19 +2408,20 @@ func newServer(listenAddrs []string, db database.DB, chainParams *chaincfg.Param
 		}
 
 		s.rpcServer, err = newRPCServer(&rpcserverConfig{
-			Listeners:   rpcListeners,
-			StartupTime: s.startupTime,
-			ConnMgr:     &rpcConnManager{&s},
-			SyncMgr:     &rpcSyncMgr{&s, s.syncManager},
-			TimeSource:  s.timeSource,
-			Chain:       s.chain,
-			ChainParams: chainParams,
-			DB:          db,
-			TxMemPool:   s.txMemPool,
-			Generator:   blockTemplateGenerator,
-			CPUMiner:    s.cpuMiner,
-			TxIndex:     s.txIndex,
-			AddrIndex:   s.addrIndex,
+			Listeners:    rpcListeners,
+			StartupTime:  s.startupTime,
+			ConnMgr:      &rpcConnManager{&s},
+			SyncMgr:      &rpcSyncMgr{&s, s.syncManager},
+			TimeSource:   s.timeSource,
+			Chain:        s.chain,
+			ChainParams:  chainParams,
+			DB:           db,
+			TxMemPool:    s.txMemPool,
+			Generator:    blockTemplateGenerator,
+			CPUMiner:     s.cpuMiner,
+			TxIndex:      s.txIndex,
+			AddrIndex:    s.addrIndex,
+			FeeEstimator: feeEstimator,
 		})
 		if err != nil {
 			return nil, err
