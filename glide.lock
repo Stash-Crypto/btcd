@@ -6,7 +6,7 @@ imports:
 - name: github.com/btcsuite/btclog
   version: 84c8d2346e9fc8c7b947e243b9c24e6df9fd206a
 - name: github.com/btcsuite/btcutil
-  version: d4cc87b860166d00d6b5b9e0d3b3d71d6088d4d4
+  version: 06b2be620b246d728b132e0eb7d97854c76ebaa5
   subpackages:
   - base58
   - bech32
