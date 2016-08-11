@@ -6,7 +6,7 @@ imports:
 - name: github.com/btcsuite/btcrpcclient
   version: abcdfb702a7ca67e4a32c10be380c63216bd69fe
 - name: github.com/btcsuite/btcutil
-  version: 86346b5a958c0cf94186b87855469ae991be501c
+  version: 94d297a8ab8c20c9addf13dc26f1b6a649a67072
   subpackages:
   - base58
   - bloom
