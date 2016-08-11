@@ -4,7 +4,7 @@ imports:
 - name: github.com/btcsuite/btclog
   version: 84c8d2346e9fc8c7b947e243b9c24e6df9fd206a
 - name: github.com/btcsuite/btcutil
-  version: 501929d3d046174c3d39f0ea54ece471aa17238c
+  version: 3be42d207cbfea64014e52e6873954c77d30c252
   subpackages:
   - base58
   - bloom
