@@ -14,14 +14,17 @@ import (
 	"github.com/btcsuite/btcutil"
 )
 
-func NewTestFeeEstimator(binSize, maxReplacements, maxRollback uint32) *FeeEstimator {
+// newTestFeeEstimator creates a feeEstimator with some different parameters
+// for testing purposes.
+func newTestFeeEstimator(binSize, maxReplacements, maxRollback uint32) *FeeEstimator {
 	return &FeeEstimator{
-		maxRollback:     maxRollback,
-		height:          mempoolHeight,
-		binSize:         int(binSize),
-		maxReplacements: int(maxReplacements),
-		observed:        make(map[chainhash.Hash]observedTransaction),
-		dropped:         make([][]*observedTransaction, 0, maxRollback),
+		maxRollback:         maxRollback,
+		lastKnownHeight:     mempoolHeight,
+		binSize:             int(binSize),
+		minRegisteredBlocks: 0,
+		maxReplacements:     int(maxReplacements),
+		observed:            make(map[chainhash.Hash]observedTransaction),
+		dropped:             make([]registeredBlock, 0, maxRollback),
 	}
 }
 
@@ -49,7 +52,7 @@ func expectedFeePerKb(t *TxDesc) float64 {
 	size := uint32(t.TxDesc.Tx.MsgTx().SerializeSize())
 	fee := uint64(t.TxDesc.Fee)
 
-	return float64(1000*fee) / float64(size)
+	return float64(1000*fee) / float64(size) * 1E-8
 }
 
 func (eft *estimateFeeTester) testBlock(txs []*wire.MsgTx) *btcutil.Block {
@@ -64,16 +67,16 @@ func (eft *estimateFeeTester) testBlock(txs []*wire.MsgTx) *btcutil.Block {
 }
 
 func TestEstimateFee(t *testing.T) {
-	ef := NewTestFeeEstimator(5, 3, 0)
+	ef := newTestFeeEstimator(5, 3, 0)
 	eft := estimateFeeTester{t: t}
 
 	// Try with no txs and get zero for all queries.
 	expected := 0.0
 	for i := uint32(1); i <= estimateFeeBins; i++ {
-		estimated := ef.EstimateFee(i)
+		estimated, _ := ef.EstimateFee(i)
 
 		if estimated != expected {
-			t.Errorf("Estimate fee error: expected %s when estimator is empty; got %s", expected, estimated)
+			t.Errorf("Estimate fee error: expected %f when estimator is empty; got %f", expected, estimated)
 		}
 	}
 
@@ -84,10 +87,22 @@ func TestEstimateFee(t *testing.T) {
 	// Expected should still be zero because this is still in the mempool.
 	expected = 0.0
 	for i := uint32(1); i <= estimateFeeBins; i++ {
-		estimated := ef.EstimateFee(i)
+		estimated, _ := ef.EstimateFee(i)
 
 		if estimated != expected {
-			t.Errorf("Estimate fee error: expected %s when estimator has one tx in mempool; got %s", expected, estimated)
+			t.Errorf("Estimate fee error: expected %f when estimator has one tx in mempool; got %f", expected, estimated)
+		}
+	}
+
+	// Change minRegisteredBlocks to make sure that works. Error return
+	// value expected.
+	ef.minRegisteredBlocks = 1
+	expected = -1.0
+	for i := uint32(1); i <= estimateFeeBins; i++ {
+		estimated, _ := ef.EstimateFee(i)
+
+		if estimated != expected {
+			t.Errorf("Estimate fee error: expected %f before any blocks have been registered; got %f", expected, estimated)
 		}
 	}
 
@@ -95,7 +110,7 @@ func TestEstimateFee(t *testing.T) {
 	ef.RecordBlock(eft.testBlock([]*wire.MsgTx{tx.Tx.MsgTx()}))
 	expected = expectedFeePerKb(tx)
 	for i := uint32(1); i <= estimateFeeBins; i++ {
-		estimated := ef.EstimateFee(i)
+		estimated, _ := ef.EstimateFee(i)
 
 		if estimated != expected {
 			t.Errorf("Estimate fee error: expected %f when one tx is binned; got %f", expected, estimated)
@@ -121,7 +136,7 @@ func TestEstimateFee(t *testing.T) {
 	// Now the estimated amount should depend on the value
 	// of the argument to estimate fee.
 	for i := uint32(1); i <= estimateFeeBins; i++ {
-		estimated := ef.EstimateFee(i)
+		estimated, _ := ef.EstimateFee(i)
 		if i > 8 {
 			expected = expectedFeePerKb(txA)
 		} else {
@@ -143,7 +158,7 @@ func TestEstimateFee(t *testing.T) {
 	// Now the estimated amount should depend on the value
 	// of the argument to estimate fee.
 	for i := uint32(1); i <= estimateFeeBins; i++ {
-		estimated := ef.EstimateFee(i)
+		estimated, _ := ef.EstimateFee(i)
 		if i <= 8 {
 			expected = expectedFeePerKb(txB)
 		} else if i <= 8+6 {
@@ -168,7 +183,7 @@ func TestEstimateFee(t *testing.T) {
 	// This should have no effect on the outcome because too
 	// many blocks have been mined for txC to be recorded.
 	for i := uint32(1); i <= estimateFeeBins; i++ {
-		estimated := ef.EstimateFee(i)
+		estimated, _ := ef.EstimateFee(i)
 		if i <= 8 {
 			expected = expectedFeePerKb(txB)
 		} else if i <= 8+6 {
@@ -188,7 +203,7 @@ func (eft *estimateFeeTester) estimates(ef *FeeEstimator) [estimateFeeBins]float
 	// Generate estimates
 	var estimates [estimateFeeBins]float64
 	for i := 0; i < estimateFeeBins; i++ {
-		estimates[i] = ef.EstimateFee(1)
+		estimates[i], _ = ef.EstimateFee(1)
 	}
 
 	// Check that all estimated fee results go in descending order.
@@ -267,10 +282,10 @@ func TestEstimateFeeRollback(t *testing.T) {
 	stepsBack := 2
 	rounds := 30
 
-	ef := NewTestFeeEstimator(binSize, maxReplacements, uint32(stepsBack))
+	ef := newTestFeeEstimator(binSize, maxReplacements, uint32(stepsBack))
 	eft := estimateFeeTester{t: t}
-	txHistory := make([][]*TxDesc, 0)
-	blockHistory := make([]*btcutil.Block, 0)
+	var txHistory [][]*TxDesc
+	var blockHistory []*btcutil.Block
 	estimateHistory := [][estimateFeeBins]float64{eft.estimates(ef)}
 
 	// Make some initial rounds so that we have room to step back.
@@ -286,7 +301,7 @@ func TestEstimateFeeRollback(t *testing.T) {
 				txPerRound, txPerBlock, uint32(stepsBack))
 
 		for step := 0; step < stepsBack; step++ {
-			err := ef.Rollback()
+			err := ef.rollback()
 			if err != nil {
 				t.Fatal("Could not rollback: ", err)
 			}
@@ -297,7 +312,8 @@ func TestEstimateFeeRollback(t *testing.T) {
 			// Ensure that these are both the same.
 			for i := 0; i < estimateFeeBins; i++ {
 				if expected[i] != estimates[i] {
-					t.Error("Rollback value mismatch.")
+					t.Errorf("Rollback value mismatch. Expected %f, got %f. ",
+						expected[i], estimates[i])
 				}
 			}
 		}

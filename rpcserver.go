@@ -853,11 +853,15 @@ func handleDecodeScript(s *rpcServer, cmd interface{}, closeChan <-chan struct{}
 func handleEstimateFee(s *rpcServer, cmd interface{}, closeChan <-chan struct{}) (interface{}, error) {
 	c := cmd.(*btcjson.EstimateFeeCmd)
 
+	if c.NumBlocks <= 0 {
+		return -1.0, errors.New("Parameter NumBlocks must be positive.")
+	}
+
 	if s.cfg.FeeEstimator == nil {
 		return nil, errors.New("Fee estimation disabled")
 	}
 
-	return s.cfg.FeeEstimator.EstimateFee(uint32(c.NumBlocks)), nil
+	return s.cfg.FeeEstimator.EstimateFee(uint32(c.NumBlocks))
 }
 
 // handleGenerate handles generate commands.
