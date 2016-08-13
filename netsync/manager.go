@@ -1282,7 +1282,7 @@ func (sm *SyncManager) handleBlockchainNotification(notification *blockchain.Not
 		// TODO instead of rolling back the previous block,
 		// check whether we are rolling back the correct one!
 		if sm.feeEstimator != nil {
-			sm.feeEstimator.Rollback()
+			sm.feeEstimator.Rollback(block)
 		}
 	}
 }

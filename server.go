@@ -2249,7 +2249,7 @@ func newServer(listenAddrs []string, db database.DB, chainParams *chaincfg.Param
 		return nil, err
 	}
 
-	feeEstimator := mempool.NewFeeEstimator(0)
+	feeEstimator := mempool.NewFeeEstimator(2, 5)
 
 	txC := mempool.Config{
 		Policy: mempool.Policy{
