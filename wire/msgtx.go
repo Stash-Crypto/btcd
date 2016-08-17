@@ -206,6 +206,20 @@ func (o OutPoint) String() string {
 	return string(buf)
 }
 
+// Serialize writes the serialized form of the OutPoint to a writer.
+func (o OutPoint) Serialize(w io.Writer) error {
+	_, err := w.Write(o.Hash[:])
+	if err != nil {
+		return err
+	}
+
+	err = binarySerializer.PutUint32(w, littleEndian, o.Index)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // TxIn defines a bitcoin transaction input.
 type TxIn struct {
 	PreviousOutPoint OutPoint
@@ -911,12 +925,7 @@ func readOutPoint(r io.Reader, pver uint32, version int32, op *OutPoint) error {
 // writeOutPoint encodes op to the bitcoin protocol encoding for an OutPoint
 // to w.
 func writeOutPoint(w io.Writer, pver uint32, version int32, op *OutPoint) error {
-	_, err := w.Write(op.Hash[:])
-	if err != nil {
-		return err
-	}
-
-	return binarySerializer.PutUint32(w, littleEndian, op.Index)
+	return (*op).Serialize(w)
 }
 
 // readScript reads a variable length byte array that represents a transaction
