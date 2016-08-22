@@ -1254,7 +1254,7 @@ func (sm *SyncManager) handleBlockchainNotification(notification *blockchain.Not
 
 		// Register block with the fee estimator, if it exists.
 		if sm.feeEstimator != nil {
-			sm.feeEstimator.RecordBlock(block)
+			sm.feeEstimator.RegisterBlock(block)
 		}
 
 	// A block has been disconnected from the main block chain.

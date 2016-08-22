@@ -532,11 +532,6 @@ func (mp *TxPool) addTransaction(utxoView *blockchain.UtxoViewpoint, tx *btcutil
 		StartingPriority: mining.CalcPriority(tx.MsgTx(), utxoView, height),
 	}
 
-	// If the fee estimator is not null, record this tx for fee estimation.
-	if mp.cfg.FeeEstimator != nil {
-		mp.cfg.FeeEstimator.ObserveTransaction(txD)
-	}
-
 	mp.pool[*tx.Hash()] = txD
 	for _, txIn := range tx.MsgTx().TxIn {
 		mp.outpoints[txIn.PreviousOutPoint] = tx
@@ -547,6 +542,11 @@ func (mp *TxPool) addTransaction(utxoView *blockchain.UtxoViewpoint, tx *btcutil
 	// if enabled.
 	if mp.cfg.AddrIndex != nil {
 		mp.cfg.AddrIndex.AddUnconfirmedTx(tx, utxoView)
+	}
+	
+	// Record this tx for fee estimation if enabled.
+	if mp.cfg.FeeEstimator != nil {
+		mp.cfg.FeeEstimator.ObserveTransaction(txD)
 	}
 
 	return txD
@@ -614,7 +614,7 @@ func (mp *TxPool) FetchTransaction(txHash *chainhash.Hash) (*btcutil.Tx, error) 
 	return nil, fmt.Errorf("transaction is not in the pool")
 }
 
-// AcceptTransaction is the internal function which implements the public
+// maybeAcceptTransaction is the internal function which implements the public
 // MaybeAcceptTransaction.  See the comment for MaybeAcceptTransaction for
 // more details.
 //
