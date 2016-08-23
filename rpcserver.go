@@ -861,7 +861,14 @@ func handleEstimateFee(s *rpcServer, cmd interface{}, closeChan <-chan struct{})
 		return nil, errors.New("Fee estimation disabled")
 	}
 
-	return s.cfg.FeeEstimator.EstimateFee(uint32(c.NumBlocks))
+	feeRate, err := s.cfg.FeeEstimator.EstimateFee(uint32(c.NumBlocks))
+
+	if err != nil {
+		return -1.0, err
+	}
+
+	// Convert to satoshis per kb.
+	return float64(feeRate.ToSatoshiPerKb()), nil
 }
 
 // handleGenerate handles generate commands.

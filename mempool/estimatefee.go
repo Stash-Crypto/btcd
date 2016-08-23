@@ -20,8 +20,6 @@ import (
 // TODO incorporate Alex Morcos' modifications to Gavin's initial model
 // https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2014-October/006824.html
 
-// TODO use sat/byte rather than btc/kilobyte.
-
 // TODO store and restore the FeeEstimator state in the database.
 
 const (
@@ -37,25 +35,51 @@ const (
 	estimateFeeMaxReplacements = 10
 )
 
+// SatoshiPerByte is number with units of satoshis per byte.
+type SatoshiPerByte float64
+
+// ToSatoshiPerKb returns a float value that represents the given
+// SatoshiPerByte converted to satoshis per kb.
+func (rate SatoshiPerByte) ToSatoshiPerKb() float64 {
+	// If our rate is the error value, return that.
+	if rate == SatoshiPerByte(-1.0) {
+		return -1.0
+	}
+
+	return float64(rate) * 1024
+}
+
+// Fee returns the fee for a transaction of a given size for
+// the given fee rate.
+func (rate SatoshiPerByte) Fee(size uint32) btcutil.Amount {
+	// If our rate is the error value, return that.
+	if rate == SatoshiPerByte(-1) {
+		return btcutil.Amount(-1)
+	}
+
+	return btcutil.Amount(float64(rate) * float64(size))
+}
+
+// NewSatoshiPerByte creates a SatoshiPerByte from an Amount and a
+// size in bytes.
+func NewSatoshiPerByte(fee btcutil.Amount, size uint32) SatoshiPerByte {
+	return SatoshiPerByte(float64(fee) / float64(size))
+}
+
 // observedTransaction represents an observed transaction and some
 // additional data required for the fee estimation algorithm.
 type observedTransaction struct {
 	// A transaction hash.
 	hash chainhash.Hash
 
-	// The size of the transaction in bytes.
-	size uint32
-
-	// The miner's fee.
-	fee btcutil.Amount
-
-	// The fee per kb of the transaction in satoshis.
-	feePerKb float64
+	// The fee per byte of the transaction in satoshis.
+	feeRate SatoshiPerByte
 
 	// The block height when it was observed.
 	observed int32
 
 	// The height of the block in which it was mined.
+	// If the transaction has not yet been mined, it is zero.
 	mined int32
 }
 
@@ -91,7 +115,7 @@ type FeeEstimator struct {
 	numBlocksRegistered uint32 // The number of blocks that have been registered.
 
 	// The cached estimates.
-	cached []float64
+	cached []SatoshiPerByte
 
 	// Transactions that have been removed from the bins. This allows us to
 	// revert in case of an orphaned block.
@@ -124,9 +148,7 @@ func (ef *FeeEstimator) ObserveTransaction(t *TxDesc) {
 
 		ef.observed[hash] = observedTransaction{
 			hash:     hash,
-			size:     size,
-			fee:      btcutil.Amount(t.Fee),
-			feePerKb: float64(1024*t.Fee) / float64(size),
+			feeRate:  NewSatoshiPerByte(btcutil.Amount(t.Fee), size),
 			observed: t.Height,
 			mined:    mining.UnminedHeight,
 		}
@@ -359,7 +381,7 @@ func (ef *FeeEstimator) rollback() error {
 // estimateFeeSet is a set of txs that can that is sorted
 // by the fee per kb rate.
 type estimateFeeSet struct {
-	feeRate []float64
+	feeRate []SatoshiPerByte
 	bin     [estimateFeeDepth]uint32
 }
 
@@ -376,9 +398,9 @@ func (b *estimateFeeSet) Swap(i, j int) {
 // estimateFee returns the estimated fee for a transaction
 // to confirm in confirmations blocks from now, given
 // the data set we have collected.
-func (b *estimateFeeSet) estimateFee(confirmations int) float64 {
+func (b *estimateFeeSet) estimateFee(confirmations int) SatoshiPerByte {
 	if confirmations <= 0 {
-		return math.Inf(1)
+		return SatoshiPerByte(math.Inf(1))
 	}
 
 	if confirmations > estimateFeeDepth {
@@ -412,12 +434,12 @@ func (ef *FeeEstimator) newEstimateFeeSet() *estimateFeeSet {
 		capacity += l
 	}
 
-	set.feeRate = make([]float64, capacity)
+	set.feeRate = make([]SatoshiPerByte, capacity)
 
 	i := 0
 	for _, b := range ef.bin {
 		for _, o := range b {
-			set.feeRate[i] = o.feePerKb
+			set.feeRate[i] = o.feeRate
 			i++
 		}
 	}
@@ -429,10 +451,10 @@ func (ef *FeeEstimator) newEstimateFeeSet() *estimateFeeSet {
 
 // estimates returns the set of all fee estimates from 1 to estimateFeeDepth
 // confirmations from now.
-func (ef *FeeEstimator) estimates() []float64 {
+func (ef *FeeEstimator) estimates() []SatoshiPerByte {
 	set := ef.newEstimateFeeSet()
 
-	estimates := make([]float64, estimateFeeDepth)
+	estimates := make([]SatoshiPerByte, estimateFeeDepth)
 	for i := 0; i < estimateFeeDepth; i++ {
 		estimates[i] = set.estimateFee(i + 1)
 	}
@@ -440,9 +462,9 @@ func (ef *FeeEstimator) estimates() []float64 {
 	return estimates
 }
 
-// EstimateFee estimates the fee per kb to have a tx confirmed a given
+// EstimateFee estimates the fee per byte to have a tx confirmed a given
 // number of blocks from now.
-func (ef *FeeEstimator) EstimateFee(numBlocks uint32) (float64, error) {
+func (ef *FeeEstimator) EstimateFee(numBlocks uint32) (SatoshiPerByte, error) {
 	ef.Lock()
 	defer ef.Unlock()
 
