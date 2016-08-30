@@ -19,16 +19,17 @@ import (
 func newTestFeeEstimator(binSize, maxReplacements, maxRollback uint32) *FeeEstimator {
 	return &FeeEstimator{
 		maxRollback:         maxRollback,
-		lastKnownHeight:     mining.UnminedHeight,
-		binSize:             int(binSize),
+		lastKnownHeight:     0,
+		binSize:             int32(binSize),
 		minRegisteredBlocks: 0,
-		maxReplacements:     int(maxReplacements),
-		observed:            make(map[chainhash.Hash]observedTransaction),
-		dropped:             make([]registeredBlock, 0, maxRollback),
+		maxReplacements:     int32(maxReplacements),
+		observed:            make(map[chainhash.Hash]*observedTransaction),
+		dropped:             make([]*registeredBlock, 0, maxRollback),
 	}
 }
 
 type estimateFeeTester struct {
+	ef      *FeeEstimator
 	t       *testing.T
 	version int32
 	height  int32
@@ -66,9 +67,15 @@ func (eft *estimateFeeTester) testBlock(txs []*wire.MsgTx) *btcutil.Block {
 	return block
 }
 
+func (eft *estimateFeeTester) rollback() {
+
+	eft.height--
+	eft.ef.rollback()
+}
+
 func TestEstimateFee(t *testing.T) {
-	ef := newTestFeeEstimator(5, 3, 0)
-	eft := estimateFeeTester{t: t}
+	ef := newTestFeeEstimator(5, 3, 1)
+	eft := estimateFeeTester{ef: ef, t: t}
 
 	// Try with no txs and get zero for all queries.
 	expected := SatoshiPerByte(0.0)
@@ -106,7 +113,33 @@ func TestEstimateFee(t *testing.T) {
 		}
 	}
 
-	// Record a block.
+	// Record a block with the new tx.
+	ef.RegisterBlock(eft.testBlock([]*wire.MsgTx{tx.Tx.MsgTx()}))
+	expected = expectedFeePerByte(tx)
+	for i := uint32(1); i <= estimateFeeDepth; i++ {
+		estimated, _ := ef.EstimateFee(i)
+
+		if estimated != expected {
+			t.Errorf("Estimate fee error: expected %f when one tx is binned; got %f", expected, estimated)
+		}
+	}
+
+	// Roll back the last block; this was an orphan block.
+	ef.minRegisteredBlocks = 0
+	eft.rollback()
+	expected = SatoshiPerByte(0.0)
+	for i := uint32(1); i <= estimateFeeDepth; i++ {
+		estimated, _ := ef.EstimateFee(i)
+
+		if estimated != expected {
+			t.Errorf("Estimate fee error: expected %f after rolling back block; got %f", expected, estimated)
+		}
+	}
+
+	// Record an empty block and then a block with the new tx.
+	// This test was made because of a bug that only appeared when there
+	// were no transactions in the first bin.
+	ef.RegisterBlock(eft.testBlock([]*wire.MsgTx{}))
 	ef.RegisterBlock(eft.testBlock([]*wire.MsgTx{tx.Tx.MsgTx()}))
 	expected = expectedFeePerByte(tx)
 	for i := uint32(1); i <= estimateFeeDepth; i++ {
@@ -125,8 +158,8 @@ func TestEstimateFee(t *testing.T) {
 	ef.ObserveTransaction(txB)
 	ef.ObserveTransaction(txC)
 
-	// Record 8 empty blocks.
-	for i := 0; i < 8; i++ {
+	// Record 7 empty blocks.
+	for i := 0; i < 7; i++ {
 		ef.RegisterBlock(eft.testBlock([]*wire.MsgTx{}))
 	}
 
@@ -137,7 +170,7 @@ func TestEstimateFee(t *testing.T) {
 	// of the argument to estimate fee.
 	for i := uint32(1); i <= estimateFeeDepth; i++ {
 		estimated, _ := ef.EstimateFee(i)
-		if i > 8 {
+		if i > 2 {
 			expected = expectedFeePerByte(txA)
 		} else {
 			expected = expectedFeePerByte(tx)
@@ -159,9 +192,9 @@ func TestEstimateFee(t *testing.T) {
 	// of the argument to estimate fee.
 	for i := uint32(1); i <= estimateFeeDepth; i++ {
 		estimated, _ := ef.EstimateFee(i)
-		if i <= 8 {
+		if i <= 2 {
 			expected = expectedFeePerByte(txB)
-		} else if i <= 8+6 {
+		} else if i <= 8 {
 			expected = expectedFeePerByte(tx)
 		} else {
 			expected = expectedFeePerByte(txA)
@@ -184,7 +217,9 @@ func TestEstimateFee(t *testing.T) {
 	// many blocks have been mined for txC to be recorded.
 	for i := uint32(1); i <= estimateFeeDepth; i++ {
 		estimated, _ := ef.EstimateFee(i)
-		if i <= 8 {
+		if i <= 2 {
+			expected = expectedFeePerByte(txC)
+		} else if i <= 8 {
 			expected = expectedFeePerByte(txB)
 		} else if i <= 8+6 {
 			expected = expectedFeePerByte(tx)
@@ -198,133 +233,158 @@ func TestEstimateFee(t *testing.T) {
 	}
 }
 
-func (eft *estimateFeeTester) estimates(ef *FeeEstimator) [estimateFeeDepth]SatoshiPerByte {
+func (eft *estimateFeeTester) estimates() [estimateFeeDepth]SatoshiPerByte {
 
 	// Generate estimates
 	var estimates [estimateFeeDepth]SatoshiPerByte
 	for i := 0; i < estimateFeeDepth; i++ {
-		estimates[i], _ = ef.EstimateFee(1)
+		estimates[i], _ = eft.ef.EstimateFee(uint32(i + 1))
 	}
 
 	// Check that all estimated fee results go in descending order.
 	for i := 1; i < estimateFeeDepth; i++ {
 		if estimates[i] > estimates[i-1] {
-			eft.t.Error("Estimates not in descending order.")
+			eft.t.Error("Estimates not in descending order; got ",
+				estimates[i], " for estimate ", i, " and ", estimates[i-1], " for ", (i - 1))
+			panic("invalid state.")
 		}
 	}
 
 	return estimates
 }
 
-func (eft *estimateFeeTester) round(ef *FeeEstimator,
-	txHistory [][]*TxDesc, blockHistory []*btcutil.Block,
+func (eft *estimateFeeTester) round(txHistory [][]*TxDesc,
 	estimateHistory [][estimateFeeDepth]SatoshiPerByte,
-	txPerRound, txPerBlock, maxRollback uint32) ([][]*TxDesc,
-	[]*btcutil.Block, [][estimateFeeDepth]SatoshiPerByte) {
+	txPerRound, txPerBlock uint32) ([][]*TxDesc, [][estimateFeeDepth]SatoshiPerByte) {
 
 	// generate new txs.
 	var newTxs []*TxDesc
 	for i := uint32(0); i < txPerRound; i++ {
 		newTx := eft.testTx(btcutil.Amount(rand.Intn(1000000)))
-		ef.ObserveTransaction(newTx)
+		eft.ef.ObserveTransaction(newTx)
 		newTxs = append(newTxs, newTx)
 	}
 
-	// Construct new tx history.
-	txHistory = append(txHistory, newTxs)
-	if len(txHistory) > estimateFeeDepth {
-		txHistory = txHistory[1 : estimateFeeDepth+1]
+	// Generate mempool.
+	mempool := make(map[*observedTransaction]*TxDesc)
+	for _, h := range txHistory {
+		for _, t := range h {
+			if o, exists := eft.ef.observed[*t.Tx.Hash()]; exists && o.mined == mining.UnminedHeight {
+				mempool[o] = t
+			}
+		}
 	}
 
 	// generate new block, with no duplicates.
-	newBlockTxs := make(map[chainhash.Hash]*wire.MsgTx)
 	i := uint32(0)
-	for i < txPerBlock {
-		n := rand.Intn(len(txHistory))
-		m := rand.Intn(int(txPerRound))
-
-		tx := txHistory[n][m]
-		hash := *tx.Tx.Hash()
-
-		if _, ok := newBlockTxs[hash]; ok {
-			continue
-		}
-
-		newBlockTxs[hash] = tx.Tx.MsgTx()
+	newBlockList := make([]*wire.MsgTx, 0, txPerBlock)
+	for _, t := range mempool {
+		newBlockList = append(newBlockList, t.TxDesc.Tx.MsgTx())
 		i++
-	}
 
-	var newBlockList []*wire.MsgTx
-	for _, tx := range newBlockTxs {
-		newBlockList = append(newBlockList, tx)
+		if i == txPerBlock {
+			break
+		}
 	}
 
 	newBlock := eft.testBlock(newBlockList)
-	ef.RegisterBlock(newBlock)
+	eft.ef.RegisterBlock(newBlock)
 
 	// return results.
-	estimates := eft.estimates(ef)
+	estimates := eft.estimates()
 
 	// Return results
-	blockHistory = append(blockHistory, newBlock)
-	if len(blockHistory) > int(maxRollback) {
-		blockHistory = blockHistory[1 : maxRollback+1]
-	}
-
-	return txHistory, blockHistory, append(estimateHistory, estimates)
+	return append(txHistory, newTxs), append(estimateHistory, estimates)
 }
 
 func TestEstimateFeeRollback(t *testing.T) {
-	txPerRound := uint32(20)
-	txPerBlock := uint32(10)
-	binSize := uint32(5)
-	maxReplacements := uint32(3)
+	txPerRound := uint32(7)
+	txPerBlock := uint32(5)
+	binSize := uint32(6)
+	maxReplacements := uint32(4)
 	stepsBack := 2
-	rounds := 30
+	rounds := 8
 
-	ef := newTestFeeEstimator(binSize, maxReplacements, uint32(stepsBack))
-	eft := estimateFeeTester{t: t}
+	eft := estimateFeeTester{ef: newTestFeeEstimator(binSize, maxReplacements, uint32(stepsBack)), t: t}
 	var txHistory [][]*TxDesc
-	var blockHistory []*btcutil.Block
-	estimateHistory := [][estimateFeeDepth]SatoshiPerByte{eft.estimates(ef)}
-
-	// Make some initial rounds so that we have room to step back.
-	for round := 0; round < stepsBack-1; round++ {
-		txHistory, blockHistory, estimateHistory =
-			eft.round(ef, txHistory, blockHistory, estimateHistory,
-				txPerRound, txPerBlock, uint32(stepsBack))
-	}
+	estimateHistory := [][estimateFeeDepth]SatoshiPerByte{eft.estimates()}
 
 	for round := 0; round < rounds; round++ {
-		txHistory, blockHistory, estimateHistory =
-			eft.round(ef, txHistory, blockHistory, estimateHistory,
-				txPerRound, txPerBlock, uint32(stepsBack))
+		// Go forward a few rounds.
+		for step := 0; step <= stepsBack; step++ {
+			txHistory, estimateHistory =
+				eft.round(txHistory, estimateHistory, txPerRound, txPerBlock)
+		}
 
+		// Now go back.
 		for step := 0; step < stepsBack; step++ {
-			err := ef.rollback()
-			if err != nil {
-				t.Fatal("Could not rollback: ", err)
-			}
+			eft.rollback()
 
+			// After rolling back, we should have the same estimated
+			// fees as before.
 			expected := estimateHistory[len(estimateHistory)-step-2]
-			estimates := eft.estimates(ef)
+			estimates := eft.estimates()
 
 			// Ensure that these are both the same.
 			for i := 0; i < estimateFeeDepth; i++ {
 				if expected[i] != estimates[i] {
 					t.Errorf("Rollback value mismatch. Expected %f, got %f. ",
 						expected[i], estimates[i])
+					return
 				}
 			}
 		}
 
-		// Remove last estries from estimateHistory
+		// Erase history.
+		txHistory = txHistory[0 : len(txHistory)-stepsBack]
 		estimateHistory = estimateHistory[0 : len(estimateHistory)-stepsBack]
+	}
+}
 
-		// replay the previous blocks.
-		for b := 0; b < stepsBack; b++ {
-			ef.RegisterBlock(blockHistory[b])
-			estimateHistory = append(estimateHistory, eft.estimates(ef))
+func (eft *estimateFeeTester) checkSaveAndRestore(
+	previousEstimates [estimateFeeDepth]SatoshiPerByte) {
+
+	// Save and restore database.
+	var err error
+	eft.ef, err = RestoreFeeEstimator(eft.ef.Save())
+	if err != nil {
+		eft.t.Fatalf("Could not restore database: %s", err)
+	}
+
+	// Check that the results match.
+	newEstimates := eft.estimates()
+
+	for i, prev := range previousEstimates {
+		if prev != newEstimates[i] {
+			eft.t.Error("Mismatch in estimate ", i, " after restore; got ", newEstimates[i], " but expected ", prev)
 		}
+	}
+}
+
+// TestSave tests saving and restoring to a []byte.
+func TestDatabase(t *testing.T) {
+
+	txPerRound := uint32(7)
+	txPerBlock := uint32(5)
+	binSize := uint32(6)
+	maxReplacements := uint32(4)
+	rounds := 8
+
+	eft := estimateFeeTester{ef: newTestFeeEstimator(binSize, maxReplacements, uint32(rounds)), t: t}
+	var txHistory [][]*TxDesc
+	estimateHistory := [][estimateFeeDepth]SatoshiPerByte{eft.estimates()}
+
+	for round := 0; round < rounds; round++ {
+		eft.checkSaveAndRestore(estimateHistory[len(estimateHistory)-1])
+
+		// Go forward one step.
+		txHistory, estimateHistory =
+			eft.round(txHistory, estimateHistory, txPerRound, txPerBlock)
+	}
+
+	// Reverse the process and try again.
+	for round := 1; round <= rounds; round++ {
+		eft.rollback()
+		eft.checkSaveAndRestore(estimateHistory[len(estimateHistory)-round])
 	}
 }
