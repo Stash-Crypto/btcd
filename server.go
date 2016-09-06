@@ -228,6 +228,10 @@ type server struct {
 	// do not need to be protected for concurrent access.
 	txIndex   *indexers.TxIndex
 	addrIndex *indexers.AddrIndex
+
+	// The fee estimator keeps track of how long transactions are left in
+	// the mempool before they are mined into blocks.
+	feeEstimator *mempool.FeeEstimator
 }
 
 // serverPeer extends the peer to maintain state shared by the server and
@@ -1953,6 +1957,13 @@ func (s *server) Stop() error {
 		s.rpcServer.Stop()
 	}
 
+	// Save fee estimator state in the database.
+	tx, err := s.db.Begin(true)
+	if err == nil {
+		metadata := tx.Metadata()
+		metadata.Put([]byte("estimatefee"), s.feeEstimator.Save())
+	}
+
 	// Signal the remaining goroutines to quit.
 	close(s.quit)
 	return nil
@@ -2249,7 +2260,30 @@ func newServer(listenAddrs []string, db database.DB, chainParams *chaincfg.Param
 		return nil, err
 	}
 
-	feeEstimator := mempool.NewFeeEstimator(2, 5)
+	// Search for a FeeEstimator state in the database. If none can be found
+	// or if it cannot be loaded, create a new one.
+	tx, err := db.Begin(true)
+	if err != nil {
+		return nil, err
+	}
+
+	key := []byte("estimatefee")
+	metadata := tx.Metadata()
+	feeEstimationData := metadata.Get(key)
+	if feeEstimationData != nil {
+
+		// delete it from the database so that we don't try to restore the
+		// same thing again somehow.
+		metadata.Delete(key)
+
+		// If there is an error just make a new fee estimator.
+		s.feeEstimator, _ = mempool.RestoreFeeEstimator(feeEstimationData)
+	}
+	tx.Commit()
+
+	if s.feeEstimator == nil {
+		s.feeEstimator = mempool.NewFeeEstimator(2, 5)
+	}
 
 	txC := mempool.Config{
 		Policy: mempool.Policy{
@@ -2273,7 +2307,7 @@ func newServer(listenAddrs []string, db database.DB, chainParams *chaincfg.Param
 		SigCache:           s.sigCache,
 		HashCache:          s.hashCache,
 		AddrIndex:          s.addrIndex,
-		FeeEstimator:       feeEstimator,
+		FeeEstimator:       s.feeEstimator,
 	}
 	s.txMemPool = mempool.New(&txC)
 
@@ -2421,7 +2455,7 @@ func newServer(listenAddrs []string, db database.DB, chainParams *chaincfg.Param
 			CPUMiner:     s.cpuMiner,
 			TxIndex:      s.txIndex,
 			AddrIndex:    s.addrIndex,
-			FeeEstimator: feeEstimator,
+			FeeEstimator: s.feeEstimator,
 		})
 		if err != nil {
 			return nil, err
