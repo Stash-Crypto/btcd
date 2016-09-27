@@ -2276,13 +2276,17 @@ func newServer(listenAddrs []string, db database.DB, chainParams *chaincfg.Param
 		// same thing again somehow.
 		metadata.Delete(key)
 
-		// If there is an error just make a new fee estimator.
-		s.feeEstimator, _ = mempool.RestoreFeeEstimator(feeEstimationData)
+		// If there is an error, log it and make a new fee estimator.
+		s.feeEstimator, err = mempool.RestoreFeeEstimator(feeEstimationData)
+
+		peerLog.Errorf("Failed restore fee estimator %v", err)
 	}
 	tx.Commit()
 
 	if s.feeEstimator == nil {
-		s.feeEstimator = mempool.NewFeeEstimator(2, 5)
+		s.feeEstimator = mempool.NewFeeEstimator(
+			mempool.DefaultEstimateFeeMaxRollback,
+			mempool.DefaultEstimateFeeMinRegisteredBlocks)
 	}
 
 	txC := mempool.Config{

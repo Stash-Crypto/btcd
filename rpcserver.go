@@ -853,12 +853,12 @@ func handleDecodeScript(s *rpcServer, cmd interface{}, closeChan <-chan struct{}
 func handleEstimateFee(s *rpcServer, cmd interface{}, closeChan <-chan struct{}) (interface{}, error) {
 	c := cmd.(*btcjson.EstimateFeeCmd)
 
-	if c.NumBlocks <= 0 {
-		return -1.0, errors.New("Parameter NumBlocks must be positive.")
-	}
-
 	if s.cfg.FeeEstimator == nil {
 		return nil, errors.New("Fee estimation disabled")
+	}
+
+	if c.NumBlocks <= 0 {
+		return -1.0, errors.New("Parameter NumBlocks must be positive.")
 	}
 
 	feeRate, err := s.cfg.FeeEstimator.EstimateFee(uint32(c.NumBlocks))
@@ -867,8 +867,7 @@ func handleEstimateFee(s *rpcServer, cmd interface{}, closeChan <-chan struct{})
 		return -1.0, err
 	}
 
-	// Convert to satoshis per kb.
-	return float64(feeRate.ToSatoshiPerKb()), nil
+	return float64(feeRate), nil
 }
 
 // handleGenerate handles generate commands.

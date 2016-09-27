@@ -13,6 +13,7 @@ import (
 	"math"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -34,20 +35,36 @@ const (
 	// estimateFeeMaxReplacements is the max number of replacements that
 	// can be made by the txs found in a given block.
 	estimateFeeMaxReplacements = 10
+
+	// DefaultEstimateFeeMaxRollback is the default number of rollbacks
+	// allowed by the fee estimator for orphaned blocks.
+	DefaultEstimateFeeMaxRollback = 2
+
+	// DefaultEstimateFeeMinRegisteredBlocks is the default minimum
+	// number of blocks which must be observed by the fee estimator before
+	// it will provide fee estimations.
+	DefaultEstimateFeeMinRegisteredBlocks = 5
+
+	bytePerKb = 1024
+
+	btcPerSatoshi = 1E-8
 )
 
 // SatoshiPerByte is number with units of satoshis per byte.
 type SatoshiPerByte float64
 
-// ToSatoshiPerKb returns a float value that represents the given
+// BtcPerKilobyte is number with units of bitcoins per kilobyte.
+type BtcPerKilobyte float64
+
+// ToBtcPerKb returns a float value that represents the given
 // SatoshiPerByte converted to satoshis per kb.
-func (rate SatoshiPerByte) ToSatoshiPerKb() float64 {
+func (rate SatoshiPerByte) ToBtcPerKb() BtcPerKilobyte {
 	// If our rate is the error value, return that.
 	if rate == SatoshiPerByte(-1.0) {
 		return -1.0
 	}
 
-	return float64(rate) * 1024
+	return BtcPerKilobyte(float64(rate) * bytePerKb * btcPerSatoshi)
 }
 
 // Fee returns the fee for a transaction of a given size for
@@ -85,7 +102,6 @@ type observedTransaction struct {
 }
 
 func (o *observedTransaction) Serialize(w io.Writer) {
-
 	binary.Write(w, binary.BigEndian, o.hash)
 	binary.Write(w, binary.BigEndian, o.feeRate)
 	binary.Write(w, binary.BigEndian, o.observed)
@@ -93,7 +109,6 @@ func (o *observedTransaction) Serialize(w io.Writer) {
 }
 
 func deserializeObservedTransaction(r io.Reader) (*observedTransaction, error) {
-
 	ot := observedTransaction{}
 
 	// The first 32 bytes should be a hash.
@@ -119,7 +134,6 @@ type registeredBlock struct {
 }
 
 func (rb *registeredBlock) serialize(w io.Writer, txs map[*observedTransaction]uint32) {
-
 	binary.Write(w, binary.BigEndian, rb.hash)
 
 	binary.Write(w, binary.BigEndian, uint32(len(rb.transactions)))
@@ -148,7 +162,7 @@ type FeeEstimator struct {
 	// The number of blocks that have been registered.
 	numBlocksRegistered uint32
 
-	sync.RWMutex
+	mtx      sync.RWMutex
 	observed map[chainhash.Hash]*observedTransaction
 	bin      [estimateFeeDepth][]*observedTransaction
 
@@ -177,8 +191,8 @@ func NewFeeEstimator(maxRollback, minRegisteredBlocks uint32) *FeeEstimator {
 
 // ObserveTransaction is called when a new transaction is observed in the mempool.
 func (ef *FeeEstimator) ObserveTransaction(t *TxDesc) {
-	ef.Lock()
-	defer ef.Unlock()
+	ef.mtx.Lock()
+	defer ef.mtx.Unlock()
 
 	// If we haven't seen a block yet we don't know when this one arrived,
 	// so we ignore it.
@@ -201,8 +215,8 @@ func (ef *FeeEstimator) ObserveTransaction(t *TxDesc) {
 
 // RegisterBlock informs the fee estimator of a new block to take into account.
 func (ef *FeeEstimator) RegisterBlock(block *btcutil.Block) error {
-	ef.Lock()
-	defer ef.Unlock()
+	ef.mtx.Lock()
+	defer ef.mtx.Unlock()
 
 	// The previous sorted list is invalid, so delete it.
 	ef.cached = nil
@@ -246,12 +260,15 @@ func (ef *FeeEstimator) RegisterBlock(block *btcutil.Block) error {
 		// Put the observed tx in the oppropriate bin.
 		blocksToConfirm := height - o.observed - 1
 
+		// This shouldn't happen if the fee estimator works correctly,
+		// but return an error if it does.
 		if o.mined != mining.UnminedHeight {
-			panic("nope nope nope.")
+			log.Error("Estimate fee: transaction ", hash.String(), " has already been mined")
+			return errors.New("Transaction has already been mined")
 		}
 
 		// This shouldn't happen but check just in case to avoid
-		// a panic later.
+		// an out-of-bounds array index later.
 		if blocksToConfirm >= estimateFeeDepth {
 			continue
 		}
@@ -313,21 +330,19 @@ func (ef *FeeEstimator) RegisterBlock(block *btcutil.Block) error {
 // deleted if they have been observed too long ago. That means the result
 // of Rollback won't always be exactly the same as if the last block had not
 // happened, but it should be close enough.
-func (ef *FeeEstimator) Rollback(block *btcutil.Block) error {
-	ef.Lock()
-	defer ef.Unlock()
-
-	hash := block.Hash()
+func (ef *FeeEstimator) Rollback(hash *chainhash.Hash) error {
+	ef.mtx.Lock()
+	defer ef.mtx.Unlock()
 
 	// Find this block in the stack of recent registered blocks.
 	var n int
-	for n = 1; n < len(ef.dropped); n++ {
+	for n = 1; n <= len(ef.dropped); n++ {
 		if ef.dropped[len(ef.dropped)-n].hash.IsEqual(hash) {
 			break
 		}
 	}
 
-	if n == len(ef.dropped) {
+	if n > len(ef.dropped) {
 		return errors.New("No such block was recently registered.")
 	}
 
@@ -341,7 +356,6 @@ func (ef *FeeEstimator) Rollback(block *btcutil.Block) error {
 // rollback rolls back the effect of the last block in the stack
 // of registered blocks.
 func (ef *FeeEstimator) rollback() {
-
 	// The previous sorted list is invalid, so delete it.
 	ef.cached = nil
 
@@ -474,7 +488,7 @@ func (b *estimateFeeSet) estimateFee(confirmations int) SatoshiPerByte {
 		feeIndex = len(b.feeRate) - 1
 	}
 
-	return b.feeRate[feeIndex] * 1E-8
+	return b.feeRate[feeIndex]
 }
 
 // newEstimateFeeSet creates a temporary data structure that
@@ -519,9 +533,9 @@ func (ef *FeeEstimator) estimates() []SatoshiPerByte {
 
 // EstimateFee estimates the fee per byte to have a tx confirmed a given
 // number of blocks from now.
-func (ef *FeeEstimator) EstimateFee(numBlocks uint32) (SatoshiPerByte, error) {
-	ef.Lock()
-	defer ef.Unlock()
+func (ef *FeeEstimator) EstimateFee(numBlocks uint32) (BtcPerKilobyte, error) {
+	ef.mtx.Lock()
+	defer ef.mtx.Unlock()
 
 	// If the number of registered blocks is below the minimum, return
 	// an error.
@@ -544,7 +558,7 @@ func (ef *FeeEstimator) EstimateFee(numBlocks uint32) (SatoshiPerByte, error) {
 		ef.cached = ef.estimates()
 	}
 
-	return ef.cached[int(numBlocks)-1], nil
+	return ef.cached[int(numBlocks)-1].ToBtcPerKb(), nil
 }
 
 // In case the format for the serialized version of the FeeEstimator changes,
@@ -554,18 +568,17 @@ func (ef *FeeEstimator) EstimateFee(numBlocks uint32) (SatoshiPerByte, error) {
 const estimateFeeSaveVersion = 1
 
 func deserializeRegisteredBlock(r io.Reader, txs map[uint32]*observedTransaction) (*registeredBlock, error) {
-
 	var lenTransactions uint32
 
 	rb := &registeredBlock{}
-	binary.Read(r, binary.BigEndian, rb.hash)
-	binary.Read(r, binary.BigEndian, lenTransactions)
+	binary.Read(r, binary.BigEndian, &rb.hash)
+	binary.Read(r, binary.BigEndian, &lenTransactions)
 
 	rb.transactions = make([]*observedTransaction, lenTransactions)
 
 	for i := uint32(0); i < lenTransactions; i++ {
 		var index uint32
-		binary.Read(r, binary.BigEndian, index)
+		binary.Read(r, binary.BigEndian, &index)
 		rb.transactions[i] = txs[index]
 	}
 
@@ -576,11 +589,26 @@ func deserializeRegisteredBlock(r io.Reader, txs map[uint32]*observedTransaction
 // restored with data from an earlier session of the program.
 type FeeEstimatorState []byte
 
+// observedTxSet is a set of txs that can that is sorted
+// by hash. It exists for serialization purposes so that
+// a serialized state always comes out the same.
+type observedTxSet []*observedTransaction
+
+func (q observedTxSet) Len() int { return len(q) }
+
+func (q observedTxSet) Less(i, j int) bool {
+	return strings.Compare(q[i].hash.String(), q[j].hash.String()) < 0
+}
+
+func (q observedTxSet) Swap(i, j int) {
+	q[i], q[j] = q[j], q[i]
+}
+
 // Save records the current state of the FeeEstimator to a []byte that
 // can be restored later.
 func (ef *FeeEstimator) Save() FeeEstimatorState {
-	ef.Lock()
-	defer ef.Unlock()
+	ef.mtx.Lock()
+	defer ef.mtx.Unlock()
 
 	// TODO figure out what the capacity should be.
 	w := bytes.NewBuffer(make([]byte, 0))
@@ -595,13 +623,22 @@ func (ef *FeeEstimator) Save() FeeEstimatorState {
 	binary.Write(w, binary.BigEndian, &ef.lastKnownHeight)
 	binary.Write(w, binary.BigEndian, &ef.numBlocksRegistered)
 
-	// Put all the observed transactions in the right bins.
+	// Put all the observed transactions in a sorted list.
 	var txCount uint32
+	ots := make([]*observedTransaction, len(ef.observed))
+	for hash := range ef.observed {
+		ots[txCount] = ef.observed[hash]
+		txCount++
+	}
+
+	sort.Sort(observedTxSet(ots))
+
+	txCount = 0
 	observed := make(map[*observedTransaction]uint32)
 	binary.Write(w, binary.BigEndian, uint32(len(ef.observed)))
-	for hash, ot := range ef.observed {
+	for _, ot := range ots {
 		ot.Serialize(w)
-		observed[ef.observed[hash]] = txCount
+		observed[ot] = txCount
 		txCount++
 	}
 
@@ -628,7 +665,6 @@ func (ef *FeeEstimator) Save() FeeEstimatorState {
 // RestoreFeeEstimator takes a FeeEstimatorState that was previously
 // returned by Save and restores it to a FeeEstimator
 func RestoreFeeEstimator(data FeeEstimatorState) (*FeeEstimator, error) {
-
 	r := bytes.NewReader([]byte(data))
 
 	// Check version
@@ -646,12 +682,12 @@ func RestoreFeeEstimator(data FeeEstimatorState) (*FeeEstimator, error) {
 	}
 
 	// Read basic parameters.
-	binary.Read(r, binary.BigEndian, ef.maxRollback)
-	binary.Read(r, binary.BigEndian, ef.binSize)
-	binary.Read(r, binary.BigEndian, ef.maxReplacements)
-	binary.Read(r, binary.BigEndian, ef.minRegisteredBlocks)
-	binary.Read(r, binary.BigEndian, ef.lastKnownHeight)
-	binary.Read(r, binary.BigEndian, ef.numBlocksRegistered)
+	binary.Read(r, binary.BigEndian, &ef.maxRollback)
+	binary.Read(r, binary.BigEndian, &ef.binSize)
+	binary.Read(r, binary.BigEndian, &ef.maxReplacements)
+	binary.Read(r, binary.BigEndian, &ef.minRegisteredBlocks)
+	binary.Read(r, binary.BigEndian, &ef.lastKnownHeight)
+	binary.Read(r, binary.BigEndian, &ef.numBlocksRegistered)
 
 	// Read transactions.
 	var numObserved uint32
@@ -673,7 +709,7 @@ func RestoreFeeEstimator(data FeeEstimatorState) (*FeeEstimator, error) {
 		bin := make([]*observedTransaction, numTransactions)
 		for j := uint32(0); j < numTransactions; j++ {
 			var index uint32
-			binary.Read(r, binary.BigEndian, index)
+			binary.Read(r, binary.BigEndian, &index)
 
 			var exists bool
 			bin[j], exists = observed[index]
