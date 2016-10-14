@@ -17,6 +17,7 @@ type GetTransactionDetailsResult struct {
 	InvolvesWatchOnly bool     `json:"involveswatchonly,omitempty"`
 	Fee               *float64 `json:"fee,omitempty"`
 	Vout              uint32   `json:"vout"`
+	Comment           string   `json:"address,omitempty"`
 }
 
 // GetTransactionResult models the data from the gettransaction command.
