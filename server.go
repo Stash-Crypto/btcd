@@ -1958,11 +1958,12 @@ func (s *server) Stop() error {
 	}
 
 	// Save fee estimator state in the database.
-	tx, err := s.db.Begin(true)
-	if err == nil {
+	s.db.Update(func(tx database.Tx) error {
 		metadata := tx.Metadata()
-		metadata.Put([]byte("estimatefee"), s.feeEstimator.Save())
-	}
+		metadata.Put(mempool.EstimateFeeDatabaseKey, s.feeEstimator.Save())
+
+		return nil
+	})
 
 	// Signal the remaining goroutines to quit.
 	close(s.quit)
@@ -2262,26 +2263,25 @@ func newServer(listenAddrs []string, db database.DB, chainParams *chaincfg.Param
 
 	// Search for a FeeEstimator state in the database. If none can be found
 	// or if it cannot be loaded, create a new one.
-	tx, err := db.Begin(true)
-	if err != nil {
-		return nil, err
-	}
+	db.Update(func(tx database.Tx) error {
+		metadata := tx.Metadata()
+		feeEstimationData := metadata.Get(mempool.EstimateFeeDatabaseKey)
+		if feeEstimationData != nil {
+			// delete it from the database so that we don't try to restore the
+			// same thing again somehow.
+			metadata.Delete(mempool.EstimateFeeDatabaseKey)
 
-	key := []byte("estimatefee")
-	metadata := tx.Metadata()
-	feeEstimationData := metadata.Get(key)
-	if feeEstimationData != nil {
+			// If there is an error, log it and make a new fee estimator.
+			var err error
+			s.feeEstimator, err = mempool.RestoreFeeEstimator(feeEstimationData)
 
-		// delete it from the database so that we don't try to restore the
-		// same thing again somehow.
-		metadata.Delete(key)
+			if err != nil {
+				peerLog.Errorf("Failed restore fee estimator %v", err)
+			}
+		}
 
-		// If there is an error, log it and make a new fee estimator.
-		s.feeEstimator, err = mempool.RestoreFeeEstimator(feeEstimationData)
-
-		peerLog.Errorf("Failed restore fee estimator %v", err)
-	}
-	tx.Commit()
+		return nil
+	})
 
 	if s.feeEstimator == nil {
 		s.feeEstimator = mempool.NewFeeEstimator(

@@ -50,6 +50,12 @@ const (
 	btcPerSatoshi = 1E-8
 )
 
+var (
+	// EstimateFeeDatabaseKey is the key that we use to
+	// store the fee estimator in the database.
+	EstimateFeeDatabaseKey = []byte("estimatefee")
+)
+
 // SatoshiPerByte is number with units of satoshis per byte.
 type SatoshiPerByte float64
 
