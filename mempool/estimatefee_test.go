@@ -29,11 +29,15 @@ func newTestFeeEstimator(binSize, maxReplacements, maxRollback uint32) *FeeEstim
 	}
 }
 
+// lastBlock is a linked list of the block hashes which have been
+// processed by the test FeeEstimator.
 type lastBlock struct {
 	hash *chainhash.Hash
 	prev *lastBlock
 }
 
+// estimateFeeTester interacts with the FeeEstimator to keep track
+// of its expected state.
 type estimateFeeTester struct {
 	ef      *FeeEstimator
 	t       *testing.T
@@ -91,6 +95,7 @@ func (eft *estimateFeeTester) rollback() {
 	eft.last = eft.last.prev
 }
 
+// TestEstimateFee tests basic functionality in the FeeEstimator.
 func TestEstimateFee(t *testing.T) {
 	ef := newTestFeeEstimator(5, 3, 1)
 	eft := estimateFeeTester{ef: ef, t: t}
@@ -315,13 +320,15 @@ func (eft *estimateFeeTester) round(txHistory [][]*TxDesc,
 	return append(txHistory, newTxs), append(estimateHistory, estimates)
 }
 
+// TestEstimateFeeRollback tests the rollback function, which undoes the
+// effect of a adding a new block.
 func TestEstimateFeeRollback(t *testing.T) {
 	txPerRound := uint32(7)
 	txPerBlock := uint32(5)
 	binSize := uint32(6)
 	maxReplacements := uint32(4)
 	stepsBack := 2
-	rounds := 1 //8
+	rounds := 30
 
 	eft := estimateFeeTester{ef: newTestFeeEstimator(binSize, maxReplacements, uint32(stepsBack)), t: t}
 	var txHistory [][]*TxDesc
