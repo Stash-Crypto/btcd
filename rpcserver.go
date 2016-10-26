@@ -252,6 +252,7 @@ var rpcLimited = map[string]struct{}{
 	"createrawtransaction":  {},
 	"decoderawtransaction":  {},
 	"decodescript":          {},
+	"estimatefee":           {},
 	"getbestblock":          {},
 	"getbestblockhash":      {},
 	"getblock":              {},
