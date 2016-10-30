@@ -2276,14 +2276,16 @@ func newServer(listenAddrs []string, db database.DB, chainParams *chaincfg.Param
 			s.feeEstimator, err = mempool.RestoreFeeEstimator(feeEstimationData)
 
 			if err != nil {
-				peerLog.Errorf("Failed restore fee estimator %v", err)
+				peerLog.Errorf("Failed to restore fee estimator %v", err)
 			}
 		}
 
 		return nil
 	})
 
-	if s.feeEstimator == nil {
+	// If no feeEstimator has been found, or if the one that has been found
+	// is behind somehow, create a new one and start over.
+	if s.feeEstimator == nil || s.feeEstimator.LastKnownHeight() != s.chain.BestSnapshot().Height {
 		s.feeEstimator = mempool.NewFeeEstimator(
 			mempool.DefaultEstimateFeeMaxRollback,
 			mempool.DefaultEstimateFeeMinRegisteredBlocks)

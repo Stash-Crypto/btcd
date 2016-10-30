@@ -859,7 +859,7 @@ func handleEstimateFee(s *rpcServer, cmd interface{}, closeChan <-chan struct{})
 	}
 
 	if c.NumBlocks <= 0 {
-		return -1.0, errors.New("Parameter NumBlocks must be positive.")
+		return -1.0, errors.New("Parameter NumBlocks must be positive")
 	}
 
 	feeRate, err := s.cfg.FeeEstimator.EstimateFee(uint32(c.NumBlocks))

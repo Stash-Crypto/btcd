@@ -43,7 +43,7 @@ const (
 	// DefaultEstimateFeeMinRegisteredBlocks is the default minimum
 	// number of blocks which must be observed by the fee estimator before
 	// it will provide fee estimations.
-	DefaultEstimateFeeMinRegisteredBlocks = 5
+	DefaultEstimateFeeMinRegisteredBlocks = 3
 
 	bytePerKb = 1024
 
@@ -327,6 +327,14 @@ func (ef *FeeEstimator) RegisterBlock(block *btcutil.Block) error {
 	return nil
 }
 
+// LastKnownHeight returns the height of the last block which was registered.
+func (ef *FeeEstimator) LastKnownHeight() int32 {
+	ef.mtx.Lock()
+	defer ef.mtx.Unlock()
+
+	return ef.lastKnownHeight
+}
+
 // Rollback unregisters a recently registered block from the FeeEstimator.
 // This can be used to reverse the effect of an orphaned block on the fee
 // estimator. The maximum number of rollbacks allowed is given by
@@ -349,7 +357,7 @@ func (ef *FeeEstimator) Rollback(hash *chainhash.Hash) error {
 	}
 
 	if n > len(ef.dropped) {
-		return errors.New("No such block was recently registered.")
+		return errors.New("No such block was recently registered")
 	}
 
 	for i := 0; i < n; i++ {
@@ -392,7 +400,7 @@ func (ef *FeeEstimator) rollback() {
 		for {
 			if counter >= len(bin) {
 				// Panic, as we have entered an unrecoverable invalid state.
-				panic(errors.New("Illegal state: cannot rollback dropped transaction!"))
+				panic(errors.New("Illegal state: cannot rollback dropped transaction"))
 			}
 
 			prev := bin[counter]
@@ -546,16 +554,16 @@ func (ef *FeeEstimator) EstimateFee(numBlocks uint32) (BtcPerKilobyte, error) {
 	// If the number of registered blocks is below the minimum, return
 	// an error.
 	if ef.numBlocksRegistered < ef.minRegisteredBlocks {
-		return -1, errors.New("Not enough blocks have been observed.")
+		return -1, errors.New("Not enough blocks have been observed")
 	}
 
 	if numBlocks == 0 {
-		return -1, errors.New("Cannot confirm transaction in zero blocks.")
+		return -1, errors.New("Cannot confirm transaction in zero blocks")
 	}
 
 	if numBlocks > estimateFeeDepth {
 		return -1, fmt.Errorf(
-			"Can only estimate fees for up to %d blocks from now.",
+			"Can only estimate fees for up to %d blocks from now",
 			estimateFeeBinSize)
 	}
 
