@@ -543,7 +543,7 @@ func (mp *TxPool) addTransaction(utxoView *blockchain.UtxoViewpoint, tx *btcutil
 	if mp.cfg.AddrIndex != nil {
 		mp.cfg.AddrIndex.AddUnconfirmedTx(tx, utxoView)
 	}
-	
+
 	// Record this tx for fee estimation if enabled.
 	if mp.cfg.FeeEstimator != nil {
 		mp.cfg.FeeEstimator.ObserveTransaction(txD)
