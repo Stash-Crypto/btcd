@@ -868,7 +868,7 @@ func handleEstimateFee(s *rpcServer, cmd interface{}, closeChan <-chan struct{})
 		return -1.0, err
 	}
 
-	return fmt.Sprintf("%.8f", float64(feeRate)), nil
+	return float64(feeRate), nil
 }
 
 // handleGenerate handles generate commands.
