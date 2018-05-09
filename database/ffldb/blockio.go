@@ -514,7 +514,27 @@ func (s *blockStore) readBlock(hash *chainhash.Hash, loc blockLocation) ([]byte,
 		return nil, err
 	}
 
-	serializedData := make([]byte, loc.blockLen)
+	// If the given length of the block is zero, then read the length from where
+	// it should be on disk.
+	var blockLen uint32
+	if loc.blockLen == 0 {
+		blockLenData := make([]byte, 4)
+		blockFile.file.ReadAt(blockLenData, int64(loc.fileOffset)+4)
+		blockLen = byteOrder.Uint32(blockLenData) + 12
+
+		// Limit blockLen in some way so as to avoid creating an array
+		// much bigger than is reasonable.
+		if blockLen > s.maxBlockFileSize {
+			str := fmt.Sprintf("failed to read block %s from file %d, "+
+				"offset %d: length %d", hash, loc.blockFileNum, loc.fileOffset,
+				blockLen)
+			return nil, makeDbErr(database.ErrDriverSpecific, str, err)
+		}
+	} else {
+		blockLen = loc.blockLen
+	}
+
+	serializedData := make([]byte, blockLen)
 	n, err := blockFile.file.ReadAt(serializedData, int64(loc.fileOffset))
 	blockFile.RUnlock()
 	if err != nil {
