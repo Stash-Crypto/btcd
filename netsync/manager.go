@@ -6,7 +6,9 @@ package netsync
 
 import (
 	"container/list"
+	"io/ioutil"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -581,6 +583,7 @@ func (sm *SyncManager) handleBlockMsg(bmsg *blockMsg) {
 		}
 		if dbErr, ok := err.(database.Error); ok && dbErr.ErrorCode ==
 			database.ErrCorruption {
+			ioutil.WriteFile("btcd_database_corruption_detected.txt", []byte(dbErr.Error()), os.ModePerm)
 			panic(dbErr)
 		}
 
