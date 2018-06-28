@@ -35,8 +35,11 @@ func recoverDatabase(path string, net wire.BitcoinNet) (uint32, error) {
 	recoveryPath := filepath.Join(path, recoveryDir)
 	recoveryDbPath := filepath.Join(recoveryPath, subdir)
 
+	fmt.Sprintf("Recovering database at %s", dbPath)
+
 	// Create recovery directory if it does not exist.
 	if _, err := os.Stat(recoveryPath); os.IsNotExist(err) {
+		fmt.Sprintf("Creating recovery directory at %s", recoveryPath)
 		if _, err := os.Stat(dbPath); err != nil {
 			return 0, err
 		}
@@ -47,6 +50,8 @@ func recoverDatabase(path string, net wire.BitcoinNet) (uint32, error) {
 	} else if err != nil {
 		return 0, err
 	}
+
+	fmt.Sprintf("Copying database to recovery directory %s\n", recoveryPath)
 
 	// Move database to recovery directory.
 	if _, err := os.Stat(recoveryDbPath); os.IsNotExist(err) {
@@ -60,6 +65,8 @@ func recoverDatabase(path string, net wire.BitcoinNet) (uint32, error) {
 			return 0, fmt.Errorf("Could not move folder: %s", err.Error())
 		}
 	}
+
+	println("Copy complete. Deleting old database.")
 
 	// Delete old database if necessary.
 	if _, err := os.Stat(dbPath); err == nil {
@@ -103,15 +110,18 @@ func recoverDatabaseFromArgs(args []string) (uint32, error) {
 	return recoverDatabase(args[0], net)
 }
 
-func recoverDatabaseProcedure(args []string) string {
+func databaseRecoveryScript(args []string) (string, int) {
 	blks, err := recoverDatabaseFromArgs(args)
 	if err != nil {
-		return err.Error()
+		return err.Error(), 1
 	}
 
-	return fmt.Sprintf("There were %d blocks read.", blks)
+	return fmt.Sprintf("There were %d blocks read.", blks), 0
 }
 
 func main() {
-	println(recoverDatabaseProcedure(os.Args[1:]))
+	d, r := databaseRecoveryScript(os.Args[1:])
+	println(d)
+
+	os.Exit(r)
 }

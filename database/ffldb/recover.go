@@ -6,8 +6,10 @@ package ffldb
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -88,8 +90,7 @@ func isDbErrCorruption(err error) bool {
 
 // recoverDB takes a leveldb database that doesn't know about any of the blocks
 // stored in the flat files and goes through all the flat files
-func recoverDB(chain *blockchain.BlockChain, db *db, p *chaincfg.Params) (blocksRead uint32, err error) {
-
+func recoverDB(chain *blockchain.BlockChain, db *db, p *chaincfg.Params, f func(*btcutil.Block, blockLocation) error) (blocksRead uint32, err error) {
 	sc := scanner{s: db.store}
 	var scn scanner
 	var blk *btcutil.Block
@@ -102,7 +103,8 @@ func recoverDB(chain *blockchain.BlockChain, db *db, p *chaincfg.Params) (blocks
 
 	for {
 		blocksRead++
-		scn, blk, _, err = sc.getNextBlock()
+		var location blockLocation
+		scn, blk, location, err = sc.getNextBlock()
 		if err != nil {
 			// If the database past a certain point is corrupted, return nil
 			// and allow the program to truncate the block files as usual at this
@@ -117,7 +119,7 @@ func recoverDB(chain *blockchain.BlockChain, db *db, p *chaincfg.Params) (blocks
 			break
 		}
 
-		_, _, err = chain.ProcessBlock(blk, blockchain.BFFastAdd|blockchain.BFNoPoWCheck)
+		err = f(blk, location)
 		if err != nil {
 			return
 		}
@@ -159,6 +161,21 @@ func RecoverDB(dbPath, oldDbPath string, p *chaincfg.Params) (uint32, error) {
 		rdb.Close()
 	}()
 
+	// Figure out how big this database is.
+	var fileNum uint32
+	var dbSize uint64
+	for {
+		info, err := os.Stat(blockFilePath(store.basePath, fileNum))
+		if err != nil {
+			break
+		}
+
+		fileNum++
+		dbSize += uint64(info.Size())
+	}
+
+	fmt.Printf("found database of size %d\n", dbSize)
+
 	// Create blockchain
 	chain, err := blockchain.New(&blockchain.Config{
 		DB:           rdb,
@@ -173,5 +190,42 @@ func RecoverDB(dbPath, oldDbPath string, p *chaincfg.Params) (uint32, error) {
 		return 0, err
 	}
 
-	return recoverDB(chain, pdb, p)
+	startTime := time.Now()
+
+	var printStatus func(bytesRead uint64, blocksRead uint32) = func(bytesRead uint64, blocksRead uint32) {
+		fraction := float64(bytesRead) / float64(dbSize)
+		percent := fraction * 100
+		timeTaken := time.Since(startTime).Seconds()
+		estimatedTimeRemaining := timeTaken * (1 - fraction) / fraction
+		fmt.Printf("read %d blocks. Bytes read: %d. Percent complete: %f, time taken: %f, estimated time remaining: %f\n",
+			blocksRead, bytesRead, percent, timeTaken, estimatedTimeRemaining)
+	}
+
+	var bytesRead uint64
+	var reports uint64
+	var blocksReports uint32
+	var blocksRead uint32
+	var blocksReportInterval uint32 = 10000
+	var reportInterval uint64 = dbSize / 100
+	return recoverDB(chain, pdb, p, func(blk *btcutil.Block, location blockLocation) error {
+		bytesRead += uint64(location.blockLen)
+		blocksRead += 1
+
+		if bytesRead/reportInterval > reports {
+			reports = bytesRead / reportInterval
+			printStatus(bytesRead, blocksRead)
+		}
+
+		if blocksRead/blocksReportInterval > blocksReports {
+			blocksReports = blocksRead / blocksReportInterval
+			printStatus(bytesRead, blocksRead)
+		}
+
+		_, _, err = chain.ProcessBlock(blk, blockchain.BFFastAdd|blockchain.BFNoPoWCheck)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
 }
